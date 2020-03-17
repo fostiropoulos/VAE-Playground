@@ -8,7 +8,7 @@ from vqvae.models.cnn_vae import cnnVAE
 
 class VQVAE(cnnVAE):
 
-    def __init__(self,image_size,channels, D,K,L,commitment_beta=0.25,lr=0.002,c=1, num_convs=4,num_fc=2):
+    def __init__(self,image_size,channels, D,K,L,commitment_beta=1,lr=0.02,c=1, num_convs=4,num_fc=2):
         self.commitment_beta=commitment_beta
         # dimension of quantization vector
         self.D=D
@@ -59,15 +59,14 @@ class VQVAE(cnnVAE):
         with tf.variable_scope("vq"):
             self.vq_loss=tf.constant([0.])
             self.commitment_loss=tf.constant([0.])            
-            self.vq_inputs=inputs
-
+            self.vq_inputs=tf.split(inputs,self.L,axis=-1)
+            print("vq_inputs %s"%self.vq_inputs)
             z=[]
             encodings=[]
             self.perplexity=[]
             
             for i in range(self.L):
-
-                out=self.vq_layer(inputs,name="lookup_table_%d"%i)
+                out=self.vq_layer(self.vq_inputs[i],name="lookup_table_%d"%i)
                 
                 
                 self.vq_loss+=out["vq_loss"]
@@ -79,8 +78,9 @@ class VQVAE(cnnVAE):
 
                 z.append(out["outputs"])
                 encodings.append(tf.cast(tf.expand_dims(out["encodings"],-1),tf.float32))
-
+                
             self.encodings=tf.concat(encodings,axis=-1)
+            
             self.z=tf.concat(z,axis=-1)
             self.vq_loss=tf.reshape( self.vq_loss,[])
             self.commitment_loss=tf.reshape( self.commitment_loss,[])
@@ -99,7 +99,6 @@ class VQVAE(cnnVAE):
         """
         VQ-LOSS
         """
-
         self.loss=self.reconstr_loss +   self.vq_loss + self.commitment_loss * self.commitment_beta
 
 

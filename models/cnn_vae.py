@@ -11,7 +11,7 @@ class cnnVAE:
 
     def __init__(self,image_size,channels,z_dim,lr=0.0002,c=0.2, num_convs=2,num_fc=2):
 
-        self.num_hiddens=256
+        self.num_hiddens=128
         self.num_res_hiddens=32
         self.embedding_dim=z_dim
         self.lr=lr
@@ -33,17 +33,22 @@ class cnnVAE:
         self.inputs=None
         self.outputs=None
         self.summary_op=None
-
         self.build_model()
         self.saver = tf.train.Saver()
         self.start_session()
-
+        
 
     def start_session(self):
         init=tf.global_variables_initializer()
         self.sess=tf.Session()
         self.sess.run(init)
         self.summary_op=tf.summary.merge_all()
+
+    def save(self,file):
+        self.saver.save(self.sess, file)
+
+    def load(self,file):
+        self.saver.restore(self.sess, file)
 
     def _loss_init(self,inputs,outputs):
         # applies sigmoid inside the function. We must provide logits and labels ONLY
@@ -71,10 +76,11 @@ class cnnVAE:
 
             i=0
             conv=(tf.keras.layers.Conv2D(num_hiddens//2,4,strides=(2,2),padding="same", activation=tf.nn.relu, name="enc_conv_%d"%i))(x)
-            i+=1
-            conv=(tf.keras.layers.Conv2D(num_hiddens,4,strides=(2,2),padding="same", activation=tf.nn.relu, name="enc_conv_%d"%i))(conv)
-            i+=1
-            conv=(tf.keras.layers.Conv2D(num_hiddens,3,strides=(1,1),padding="same", activation=tf.nn.relu, name="enc_conv_%d"%i))(conv)
+
+            for j in range(self.num_convs):
+                i+=1
+                conv=(tf.keras.layers.Conv2D(num_hiddens,4,strides=(2,2),padding="same", activation=tf.nn.relu, name="enc_conv_%d"%i))(conv)
+
             for j in range(2):
                 first_res=(tf.keras.layers.Conv2D(num_res_hiddens,3,strides=(1,1),padding="same", activation=tf.nn.relu, name="res_enc_conv_%d"%j))(conv)
                 self.conv_layers.append(first_res)
@@ -82,7 +88,7 @@ class cnnVAE:
                 self.conv_layers.append(second_res)
                 conv+=second_res # resnet v1
             conv=tf.nn.relu(conv)
-            conv=(tf.keras.layers.Conv2D(embedding_dim,1,strides=(1,1),padding="same", activation=None, name="to_vq"))(conv)
+            conv=(tf.keras.layers.Conv2D(embedding_dim*self.L,1,strides=(1,1),padding="same", activation=None, name="to_vq"))(conv)
             #self.orig_shape=(-1,conv.shape[1],conv.shape[2],conv.shape[3])
             #self.orig_shape=conv.shape
             #print(self.orig_shape)
@@ -95,7 +101,7 @@ class cnnVAE:
             num_hiddens=self.num_hiddens
             num_res_hiddens=self.num_res_hiddens
             embedding_dim=self.embedding_dim
-            print(x.shape)
+            print("Decoder-Input: %s"%x.shape)
             deconv=x#tf.reshape(x,self.orig_shape)
             
 
@@ -108,10 +114,14 @@ class cnnVAE:
                 self.conv_layers.append(second_res)
                 conv+=tf.nn.relu(second_res) # resnet v1
             i=0
-            deconv = tf.keras.layers.Conv2DTranspose( num_hiddens//2, 4, strides=(2, 2), padding="same", activation=tf.nn.relu, name="dec_deconv_%d"%(i+1)) (conv)
-            i+=1
-            last_layer = tf.keras.layers.Conv2DTranspose( self.channels*256, 4, strides=(2, 2), padding="same", activation=None, name="dec_deconv_%d"%(i+1)) (deconv)
-            
+            deconv=conv
+            for j in range(self.num_convs):
+                deconv = tf.keras.layers.Conv2DTranspose( num_hiddens//2, 4, strides=(2, 2), padding="same", activation=tf.nn.relu, name="dec_deconv_%d"%(i)) (deconv)
+                i+=1
+            last_layer = tf.keras.layers.Conv2DTranspose( self.channels*256, 4, strides=(2, 2), padding="same", activation=None, name="dec_deconv_%d"%(i)) (deconv)
+        
+        print("last layer: %s"%last_layer.shape)
+
         return tf.reshape(last_layer,[-1,self.image_size,self.image_size,self.channels,256])
 
     def sample(mu,sigma):
