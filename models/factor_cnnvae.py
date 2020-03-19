@@ -1,12 +1,12 @@
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
-import numpy as np
-from collections import OrderedDict
-from tensorflow.keras.utils import to_categorical
-
-from vqvae.models.vae_utils import plot_reconstruction,shuffle_X_y,plot_loss
-from vqvae.models.vq_vae import VQVAE
+import numpy as numpy
+from vae_utils import plot_reconstruction,shuffle_X_y,plot_loss
+import random
+from PIL import Image
 from tqdm import tqdm
+import numpy as np
+from vqvae.models.cnn_vae import cnnVAE
 
 class Mine(tf.keras.Model):
     def __init__(self):
@@ -28,21 +28,22 @@ class Mine(tf.keras.Model):
         
         return self.logs(out)
 
-class VQVAEPlus(VQVAE):
+class FactorVAE(cnnVAE):
 
-    def __init__(self,image_size,channels,D,K,L,commitment_beta=0.25,lr=0.002,c=1, num_convs=4,num_fc=2, use_mine=True):
+    def __init__(self,image_size,channels,z_dim,lr=0.002,c=1, num_convs=4,num_fc=2, use_mine=True):
         self.use_mine=use_mine
-        super().__init__(image_size,channels, D,K,L,commitment_beta,lr,c, num_convs,num_fc)
+        self.L=1
+        self.D=z_dim//2
+        super().__init__(image_size,channels, z_dim,lr,c, num_convs,num_fc)
 
 
     def _loss_init(self,inputs,outputs):
         if self.use_mine:
             #
-
-            x_sample=tf.reshape(self.encodings[:,:,:,:1],(-1,1))/self.K
-            y_sample=tf.reshape(self.encodings[:,:,:,1:],(-1,1))/self.K
-            x_sample1, x_sample2 = tf.split(x_sample, 2)
-            y_sample1, y_sample2 = tf.split(y_sample, 2)
+            print("Z",self.z.shape)
+            x_sample=tf.reshape(self.z[:,:,:,:self.D],(-1,self.D))
+            y_sample=tf.reshape(self.z[:,:,:,self.D:],(-1,self.D))
+            print(x_sample.shape)
             x_sample1, x_sample2 = tf.split(x_sample, 2)
             y_sample1, y_sample2 = tf.split(y_sample, 2)
             joint_sample = tf.concat([x_sample1, y_sample1], axis=1)
@@ -59,7 +60,7 @@ class VQVAEPlus(VQVAE):
             #self.marginal=model(marg_sample)
             # log_mean_Exp
             z=tf.split(self.mine_logits,2,axis=0)[0]
-            self.mine=tf.clip_by_value(tf.reduce_mean(tf.math.log((tf.math.sigmoid(z))/(1-tf.math.sigmoid(z)))),-1,10000)
+            self.mine=tf.clip_by_value(tf.reduce_mean(tf.math.log((tf.math.sigmoid(z))/(1-tf.math.sigmoid(z)))),-1,100)
             self.mine_loss=tf.reduce_mean(
                             tf.nn.sigmoid_cross_entropy_with_logits(labels=labels,logits=self.mine_logits))#,-10000,10000) 
             #tf.clip_by_value(-tf.reduce_mean(self.joint) +tf.math.log(tf.reduce_mean(tf.exp(self.marginal))), 0, 1000000)
@@ -68,7 +69,7 @@ class VQVAEPlus(VQVAE):
             gvs = opt.compute_gradients(self.mine_loss,var_list=model.trainable_variables)
             capped_gvs = [(tf.clip_by_value(grad, -1., 1.), var) for grad, var in gvs]
             self.mine_train = opt.apply_gradients(capped_gvs)
-
+        
         else:
             self.mine=tf.constant(0.)
         """
@@ -81,20 +82,20 @@ class VQVAEPlus(VQVAE):
         """
         VQ-LOSS
         """
-        self.loss=self.mine*1 + self.reconstr_loss +   self.vq_loss + self.commitment_loss * self.commitment_beta 
+
+        self.latent_loss= -tf.reduce_mean(0.5 * (1 + self.sigma - self.mu**2 - tf.exp(self.sigma)))
+
+
+        self.loss=self.mine*1 + self.reconstr_loss +self.latent_loss
 
         self.losses={}
         self.losses["total loss"]=self.loss
-        self.losses["VQ"]=self.vq_loss
-        self.losses["Commitment"]=self.commitment_loss
+        self.losses["kl"]=self.latent_loss
         self.losses["reconstruction"]=self.reconstr_loss
-        for i,perplexity in enumerate(self.perplexity):
-            self.losses["perplexity C_%d"%i]=perplexity
         self.losses["MINE"]=self.mine
 
 
-        tf.summary.scalar('vq_loss', self.vq_loss )
-        tf.summary.scalar('commitment_loss', self.commitment_loss )
+        tf.summary.scalar('kl', self.latent_loss )
         tf.summary.scalar("reconstr_loss", self.reconstr_loss)
         tf.summary.scalar("MINE", self.mine)
         tf.summary.scalar("total_loss", self.loss)
@@ -138,3 +139,4 @@ class VQVAEPlus(VQVAE):
             test_out=[.0]*len(self.losses)
 
         return train_out, [test_out]
+

@@ -50,7 +50,7 @@ class VQVAE(cnnVAE):
         perplexity = tf.exp(-tf.reduce_sum(avg_probs *
                                         tf.math.log(avg_probs + 1e-10)))
 
-        commitment_loss = self.commitment_beta * tf.reduce_mean((z_e - tf.stop_gradient(e_k)) ** 2)
+        commitment_loss = tf.reduce_mean((z_e - tf.stop_gradient(e_k)) ** 2)
         vq_loss = tf.reduce_mean((tf.stop_gradient(z_e) - e_k) ** 2)
         return {"outputs":quantized,"perplexity":perplexity,"commitment_loss":commitment_loss,"vq_loss":vq_loss,"encodings":encoding_indices}
         
