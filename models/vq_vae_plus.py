@@ -38,9 +38,8 @@ class VQVAEPlus(VQVAE):
     def _loss_init(self,inputs,outputs):
         if self.use_mine:
             #
-
-            x_sample=tf.reshape(self.encodings[:,:,:,:1],(-1,1))/self.K
-            y_sample=tf.reshape(self.encodings[:,:,:,1:],(-1,1))/self.K
+            x_sample=tf.reshape(self.vq_inputs[:,:,:,:1],(-1,1))
+            y_sample=tf.reshape(self.vq_inputs[:,:,:,1:],(-1,1))
             x_sample1, x_sample2 = tf.split(x_sample, 2)
             y_sample1, y_sample2 = tf.split(y_sample, 2)
             x_sample1, x_sample2 = tf.split(x_sample, 2)
@@ -81,15 +80,15 @@ class VQVAEPlus(VQVAE):
         """
         VQ-LOSS
         """
-        self.loss=self.mine*1 + self.reconstr_loss +   self.vq_loss + self.commitment_loss * self.commitment_beta 
+        self.loss=self.mine*1 + self.reconstr_loss + self.commitment_loss * self.commitment_beta   + self.vq_loss 
 
         self.losses={}
         self.losses["total loss"]=self.loss
         self.losses["VQ"]=self.vq_loss
         self.losses["Commitment"]=self.commitment_loss
         self.losses["reconstruction"]=self.reconstr_loss
-        for i,perplexity in enumerate(self.perplexity):
-            self.losses["perplexity C_%d"%i]=perplexity
+        #for i,perplexity in enumerate(self.perplexity):
+        #    self.losses["perplexity C_%d"%i]=perplexity
         self.losses["MINE"]=self.mine
 
 
@@ -99,11 +98,62 @@ class VQVAEPlus(VQVAE):
         tf.summary.scalar("MINE", self.mine)
         tf.summary.scalar("total_loss", self.loss)
 
+    def plot_codebooks(self,test_data,title=""):
+        from matplotlib.pyplot import figure
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+
+        figure( figsize=(10, 6), dpi=200, facecolor='w', edgecolor='k')
+
+        tables=[]
+        L=self.L
+        for i in range(L):
+            tables.append(self.sess.run(self.sess.graph.get_tensor_by_name("vq/lookup_table_%d:0"%(i))))
+        codebooks=np.transpose(np.array(tables),[0,2,1])
+        for i in range(L):
+            x,y=codebooks[i,:,0],codebooks[i,:,1]
+            """
+            points=np.array(list(zip(x,y)))
+            vor = Voronoi(points)
+            regions, vertices = voronoi_finite_polygons_2d(vor)
+            # colorize
+            for region in regions:
+                polygon = vertices[region]
+                plt.fill(*zip(*polygon), alpha=0.4)
+
+            plt.plot(points[:,0], points[:,1], 'ko')
+            plt.xlim(vor.min_bound[0] - 0.1, vor.max_bound[0] + 0.1)
+            plt.ylim(vor.min_bound[1] - 0.1, vor.max_bound[1] + 0.1)
+            """
+            #plt.show()
+            plt.scatter(x,y,label='Codebook Centroids %d'%i,s=10)
+
+        vq_inputs=self.sess.run([self.vq_inputs], feed_dict={self.X:test_data})[0]
+        #x,y=z_e.reshape(-1,2)[:,0],z_e.reshape(-1,2)[:,1]
+        viridis = cm.get_cmap('viridis', 10)
+        #i=vq_inputs[0]
+        #print(i.shape)
+        #x,y=i[:,:,0],i[:,:,1]
+        #plt.scatter(x,y,c='orange', label="Test Sample input to VQ",s=.1)
+        #i=vq_inputs[1]
+        i=vq_inputs
+        x,y=i[:,:,:,0],i[:,:,:,1]
+        plt.scatter(x,y,c='blue', label="Test Sample input to VQ",s=.1)
+        plt.xlabel("centroid d=0")
+        plt.ylabel("centroid d=1")
+        plt.title(title)
+        plt.legend()
+        plt.show()
+
     def partial_fit(self,X,X_test=None, batch_size=64):
 
         np.random.shuffle(X)
         num_batches=X.shape[0]//batch_size
         train_out=[]
+
+        np.random.shuffle(X_test)
+        X_images=self.read_batch(X_test[:batch_size])
+        #self.plot_codebooks(X_images)
         with tqdm(range(num_batches)) as t:
             for i in t:
                 X_batch=X[i*batch_size:(i+1)*batch_size]
@@ -134,6 +184,7 @@ class VQVAEPlus(VQVAE):
             losses=self.sess.run( list(self.losses.values()),
                                     feed_dict=self.get_feed_dict(X_images))
             test_out=list(zip(self.losses.keys(),losses))
+            #self.plot_codebooks(X_images)
         else:
             test_out=[.0]*len(self.losses)
 

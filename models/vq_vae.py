@@ -28,9 +28,11 @@ class VQVAE(cnnVAE):
         # supported in V2. Are we missing anything here?
         return tf.nn.embedding_lookup(w, encoding_indices)
     
-    def vq_layer(self,inputs,name="lookup_table"):
+    def vq_layer(self,inputs,name="lookup_table",init=tf.truncated_normal_initializer(mean=0., stddev=.1)):
 
-        embeddings = tf.get_variable(name,dtype=tf.float32,shape=[self.D, self.K],initializer=tf.truncated_normal_initializer(mean=0., stddev=.1))
+        embeddings = tf.get_variable(name,shape=[self.D, self.K],dtype=tf.float32,initializer=init)#
+        #shape=[self.D, self.K],
+        print(embeddings.shape)
         z_e=inputs
         flat_inputs = tf.reshape(inputs, [-1, self.D])
         distances = (
@@ -58,15 +60,22 @@ class VQVAE(cnnVAE):
     def _z_init(self,inputs):
         with tf.variable_scope("vq"):
             self.vq_loss=tf.constant([0.])
-            self.commitment_loss=tf.constant([0.])            
-            self.vq_inputs=tf.split(inputs,self.L,axis=-1)
+            self.commitment_loss=tf.constant([0.]) 
+            x=inputs   
+            #self.mu=(tf.keras.layers.Conv2D(self.D,3,strides=(1,1),padding="same", activation=None, name="dec_conv_mu"))(x)
+            #self.sigma=(tf.keras.layers.Conv2D(self.D,3,strides=(1,1),padding="same", activation=None, name="dec_conv_std"))(x)
+        
+
+
+            #self.vq_inputs=cnnVAE.sample(self.mu,self.sigma)#tf.split(inputs,self.L,axis=-1)
+            self.vq_inputs=(tf.keras.layers.Conv2D(self.D,3,strides=(1,1),padding="same", activation=None, name="dec_conv"))(x)
             print("vq_inputs %s"%self.vq_inputs)
             z=[]
             encodings=[]
             self.perplexity=[]
-            
+            inits=[[tf.zeros(self.K),tf.linspace(-.5,.5,self.K)],[tf.linspace(.5,-.5,self.K),tf.zeros(self.K)]]#tf.linspace(-1.,1.,self.K)]
             for i in range(self.L):
-                out=self.vq_layer(self.vq_inputs[i],name="lookup_table_%d"%i)
+                out=self.vq_layer(self.vq_inputs,name="lookup_table_%d"%i)#init=inits[i])
                 
                 
                 self.vq_loss+=out["vq_loss"]

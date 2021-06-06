@@ -7,9 +7,17 @@ from PIL import Image
 from tqdm import tqdm
 import numpy as np
 
-class cnnVAE:
+class dvq:
 
-    def __init__(self,image_size,channels,z_dim,lr=0.0002,c=0.2, num_convs=2,num_fc=2):
+    def __init__(self,image_size,channels, D,K,L,commitment_beta=1,lr=0.02, num_convs=1,spatial=False, concat=False,joint=False):
+        self.commitment_beta=commitment_beta
+        self.D=D
+        self.K=K
+        self.L=L
+        self.z=None
+        self.joint=joint
+        self.spatial=spatial
+        self.concat=concat 
 
         self.num_hiddens=255
         self.num_res_hiddens=64
@@ -17,20 +25,12 @@ class cnnVAE:
         self.lr=lr
         self.image_size=image_size
         self.channels=channels
-        # kl coefficient 
-        self.c=c
         self.num_convs=num_convs
-        self.num_fc=num_fc 
         self.X=None
-        self.mu=None
-        self.sigma=None
         self.losses=[]
-        self.fc=[]
         self.conv_layers=[]
-        self.dec_fc=[]
         self.deconv_layers=[]
         self.display_layer=None
-        self.inputs=None
         self.outputs=None
         self.summary_op=None
         self.build_model()
@@ -49,22 +49,6 @@ class cnnVAE:
 
     def load(self,file):
         self.saver.restore(self.sess, file)
-
-    def _loss_init(self,inputs,outputs):
-        # applies sigmoid inside the function. We must provide logits and labels ONLY
-        reconstr_loss=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=inputs,logits=outputs)
-        # get the mean for each sample for the reconstruction error
-        self.reconstr_loss=tf.reduce_mean(reconstr_loss)
-        self.latent_loss= -tf.reduce_mean(0.5 * (1 + self.sigma - self.mu**2 - tf.exp(self.sigma)))
-
-        self.loss=self.reconstr_loss+ self.latent_loss * self.c
-        self.losses={}
-        self.losses["total loss"]=self.loss
-        self.losses["KL"]=self.latent_loss
-        self.losses["reconstruction"]=self.reconstr_loss
-        tf.summary.scalar("total_loss", self.loss)
-        tf.summary.scalar("latent_loss", self.latent_loss)
-        tf.summary.scalar("reconstr_loss", self.reconstr_loss)
 
     def _encoder_init(self,x):
 
@@ -88,25 +72,13 @@ class cnnVAE:
                 self.conv_layers.append(second_res)
                 conv+=second_res # resnet v1
             conv=tf.nn.relu(conv)
-            #conv=(tf.keras.layers.Conv2D(embedding_dim*self.L,1,strides=(1,1),padding="same", activation=None, name="to_vq"))(conv)
-            #conv=(tf.keras.layers.Conv2D(self.D,1,strides=(1,1),padding="same", activation=None, name="to_vq"))(conv)
-            #self.orig_shape=(-1,conv.shape[1],conv.shape[2],conv.shape[3])
-            #self.orig_shape=conv.shape
-            #print(self.orig_shape)
-            #flat=tf.keras.layers.Flatten()(conv)
-            #d=tf.keras.layers.Dense(10,activation="relu")(flat)
-            #out=tf.keras.layers.Dense(2,activation="relu")(d)
-        return conv#out#tf.reshape(conv,(-1,np.prod(conv.shape[1:])))
-
+        return conv
     def _decoder_init(self,x):
         with tf.variable_scope("decoder"):
             num_hiddens=self.num_hiddens
             num_res_hiddens=self.num_res_hiddens
             embedding_dim=self.embedding_dim
 
-            #x=tf.keras.layers.Dense(np.prod(self.orig_shape[1:]),activation="relu")(x)
-            print("Decoder-Input: %s"%x.shape)
-            deconv=x#tf.reshape(x,self.orig_shape)
             
 
             conv=(tf.keras.layers.Conv2D(num_hiddens,3,strides=(1,1),padding="same", activation=None, name="dec_conv_0"))(deconv)
@@ -124,43 +96,27 @@ class cnnVAE:
                 i+=1
             last_layer = tf.keras.layers.Conv2DTranspose( self.channels*256, 4, strides=(2, 2), padding="same", activation=None, name="dec_deconv_%d"%(i)) (deconv)
         
-        print("last layer: %s"%last_layer.shape)
 
         return tf.reshape(last_layer,[-1,self.image_size,self.image_size,self.channels,256])
 
-    def sample(mu,sigma):
-        eps_shape = tf.shape(mu)
-        eps = tf.random_normal( eps_shape, 0, 1, dtype=tf.float32 )
-        z = tf.add(mu, tf.multiply(tf.sqrt(tf.exp(sigma)), eps), name="z")
-        return z
-
-    def _z_init(self,x):
-
-        self.mu=(tf.keras.layers.Conv2D(self.embedding_dim,3,strides=(1,1),padding="same", activation=None, name="dec_conv_0"))(x)
-        self.sigma=(tf.keras.layers.Conv2D(self.embedding_dim,3,strides=(1,1),padding="same", activation=None, name="dec_conv_0"))(x)
-        return cnnVAE.sample(self.mu,self.sigma)
 
     def build_model(self):
 
         tf.reset_default_graph()
 
-        #images
         self.X=tf.placeholder(tf.int32,[None,self.image_size,self.image_size,self.channels], name="x_input")
         enc_out=self._encoder_init(tf.cast(self.X,tf.float32)/255-0.5)
         self.z=self._z_init(enc_out)
         self.outputs=self._decoder_init(self.z)
         
-        #display layer ONLY
         self.display_layer=tf.cast(tf.math.argmax(tf.nn.softmax(self.outputs,name="output"),axis=-1),tf.int32)
         
 
         hstack=tf.cast(tf.concat(([self.display_layer,self.X]),axis=1),tf.float32)
         tf.summary.image("reconstruction",hstack)
 
-        # flatten the inputs
         inputs=tf.reshape(self.X,(-1,self.channels*self.image_size**2), name="inputs")
 
-        # flatten the outputs
         outputs=tf.reshape(self.outputs,(-1,self.channels*self.image_size**2,256),name="outputs")
         self._loss_init(inputs,outputs)
         self._train_init()
@@ -169,11 +125,6 @@ class cnnVAE:
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
         self.train = [self.optimizer.minimize(self.loss)]
 
-    def sample(mu,sigma):
-        eps_shape = tf.shape(mu)
-        eps = tf.random_normal( eps_shape, 0, 1, dtype=tf.float32 )
-        z = tf.add(mu, tf.multiply(tf.sqrt(tf.exp(sigma)), eps), name="z")
-        return z
 
     def reconstruct(self,rec_imgs):
         return self.sess.run(self.display_layer,feed_dict={self.X:rec_imgs})
@@ -264,11 +215,128 @@ class cnnVAE:
                     writer_test.flush()
 
             if(verbose):
-                # print the last one only
                 print("Train {}".format(train_monitor[-1]))
                 print("Test {}".format(test_monitor[-1]))
         if plot:
-            #ignore epochs by indexing 1:
             plot_loss(np.array(train_monitor),"train")
             plot_loss(np.array(test_monitor),"test")
         return train_monitor,test_monitor
+
+
+    def quantize(self, embeddings,encoding_indices):
+        w = tf.transpose(embeddings, [1, 0])
+        return tf.nn.embedding_lookup(w, encoding_indices)
+    
+    def vq_layer(self,inputs,D,K,name="lookup_table",init=tf.truncated_normal_initializer(mean=0., stddev=.1)):
+
+        embeddings = tf.get_variable(name,shape=[D, K],dtype=tf.float32,initializer=init)
+        print(embeddings.shape)
+        z_e=inputs
+        flat_inputs = tf.reshape(inputs, [-1, D])
+        distances = (
+            tf.reduce_sum(flat_inputs**2, 1, keepdims=True) -
+            2 * tf.matmul(flat_inputs, embeddings) +
+            tf.reduce_sum(embeddings**2, 0, keepdims=True))
+        encoding_indices = tf.argmax(-distances, 1)
+        encodings = tf.one_hot(encoding_indices, self.K)
+        encoding_indices = tf.reshape(encoding_indices, tf.shape(inputs)[:-1])
+        quantized = self.quantize(embeddings,encoding_indices)
+        e_k=quantized
+
+
+        quantized = inputs + tf.stop_gradient(quantized - inputs)
+        avg_probs = tf.reduce_mean(tf.nn.softmax(distances,axis=-1),0)
+
+        perplexity = tf.exp(-tf.reduce_sum(avg_probs *
+                                        tf.math.log(avg_probs + 1e-10)))
+
+        commitment_loss = tf.reduce_mean((z_e - tf.stop_gradient(e_k)) ** 2)
+        vq_loss = tf.reduce_mean((tf.stop_gradient(z_e) - e_k) ** 2)
+
+
+        distance=(
+            tf.reduce_sum(tf.transpose(embeddings,[1,0])**2, 1, keepdims=True) -
+            2 * tf.matmul(tf.transpose(embeddings,[1,0]), embeddings) +
+            tf.reduce_sum(embeddings**2, 0, keepdims=True))
+
+        return {"outputs":quantized,"perplexity":perplexity,"distance":distance,"commitment_loss":commitment_loss,"vq_loss":vq_loss,"encodings":encoding_indices}
+        
+
+    def _z_init(self,inputs):
+        with tf.variable_scope("vq"):
+            self.vq_loss=tf.constant([0.])
+            self.commitment_loss=tf.constant([0.]) 
+            x=inputs   
+            if self.joint:
+                pre_vq=(tf.keras.layers.Conv2D(self.D,3,strides=(1,1),padding="same", activation=None, name="dec_conv"))(x)
+                self.vq_inputs=list([pre_vq])
+            else:
+                if self.spatial:
+                    pre_vq=(tf.keras.layers.Conv2D(self.D*self.L,3,strides=(1,1),padding="same", activation=None, name="dec_conv"))(x)
+                    self.vq_inputs=tf.split(tf.reshape(pre_vq,(-1,int(pre_vq.shape[1])**2,self.D*self.L)),self.L,axis=1)
+
+                else:
+                    self.vq_inputs=tf.split((tf.keras.layers.Conv2D(self.D*self.L,3,strides=(1,1),padding="same", activation=None, name="dec_conv"))(x),self.L,axis=-1)
+            z=[]
+            encodings=[]
+            self.perplexity=[]
+            
+            for i in range(self.L):
+                out=self.vq_layer(self.vq_inputs[i] if not self.joint else self.vq_inputs[0],self.D*self.L if self.spatial else self.D,self.K,name="lookup_table_0_%d"%i)#init=inits[i])
+                self.vq_loss+=out["vq_loss"]
+                self.commitment_loss+=out["commitment_loss"]
+                
+                self.distance=out["distance"]
+                z.append(out["outputs"])
+                encodings.append(tf.cast(tf.expand_dims(out["encodings"],-1),tf.float32))
+
+            if self.joint:
+                if self.concat:
+                    self.z=tf.concat(z,axis=-1)
+                else:
+                    self.z=tf.math.add_n(z,axis=-1)
+            else:
+                if self.spatial:
+                    self.z=tf.reshape(tf.concat(z,axis=1),[-1]+list(np.array(pre_vq.shape[1:]).astype(np.int32)))
+                else:
+                    self.z=tf.concat(z,axis=-1)
+            self.encodings=tf.concat(encodings,axis=-1)
+
+            self.vq_loss=tf.reshape( self.vq_loss,[])
+            self.commitment_loss=tf.reshape( self.commitment_loss,[])
+        return self.z
+
+
+    def _loss_init(self,inputs,outputs):
+
+        """
+        VAE-LOSS
+        """
+
+        reconstr_loss=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=inputs,logits=outputs)
+        self.reconstr_loss=tf.reduce_mean(reconstr_loss)
+
+        """
+        VQ-LOSS
+        """
+        self.loss=self.reconstr_loss +   self.vq_loss + self.commitment_loss * self.commitment_beta + 0.001#*tf.reduce_mean(self.distance)
+
+
+        self.losses={}
+        self.losses["total loss"]=self.loss
+        self.losses["VQ"]=self.vq_loss
+        self.losses["Commitment"]=self.commitment_loss
+        self.losses["reconstruction"]=self.reconstr_loss
+
+
+        tf.summary.scalar('vq_loss', self.vq_loss )
+        tf.summary.scalar('commitment_loss', self.commitment_loss )
+        tf.summary.scalar("reconstr_loss", self.reconstr_loss)
+        tf.summary.scalar("total_loss", self.loss)
+
+    def _train_init(self):
+        self.optimizer = tf.train.AdamOptimizer(learning_rate=self.lr)
+        self.optimizer_distance = tf.train.AdamOptimizer(learning_rate=0.01)
+        self.train = [self.optimizer.minimize(self.loss)]
+        if(self.penalize_perplexity):
+            self.train.append(self.optimizer_distance.minimize(-self.perplexity))#-tf.reduce_mean(self.embeddings_distance))]#
