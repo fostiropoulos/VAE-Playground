@@ -1,1 +1,3 @@
-# VQ_VAE_Analysis
+# VAE Playground
+
+Experimenting with different VAE models
